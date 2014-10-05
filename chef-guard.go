@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/rcrowley/go-metrics"
 	"github.com/xanzy/chef-guard/Godeps/_workspace/src/github.com/google/go-github/github"
 	"github.com/xanzy/chef-guard/Godeps/_workspace/src/github.com/gorilla/mux"
 	"github.com/xanzy/chef-guard/Godeps/_workspace/src/github.com/marpaia/chef-golang"
@@ -76,6 +77,8 @@ func newChefGuard(r *http.Request) (*ChefGuard, error) {
 }
 
 func main() {
+	go metrics.Log(metrics.DefaultRegistry, 90e9, log.New(os.Stdout, "metrics: ", log.Lmicroseconds))
+
 	// Load and parse the config file
 	if err := loadConfig(); err != nil {
 		log.Fatal(err)
@@ -100,25 +103,41 @@ func main() {
 
 	// Configure all needed handlers
 	rtr := mux.NewRouter()
-	if cfg.Chef.EnterpriseChef {
-		rtr.Path("/organizations/{org}/{type:data}/{bag}").HandlerFunc(processChange(p)).Methods("POST")
-		rtr.Path("/organizations/{org}/{type:data}/{bag}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
-		rtr.Path("/organizations/{org}/{type:environments|nodes|roles}").HandlerFunc(processChange(p)).Methods("POST")
-		rtr.Path("/organizations/{org}/{type:environments|nodes|roles}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
-		rtr.Path("/organizations/{org}/{type:cookbooks}/{name}/{version}").HandlerFunc(processCookbook(p)).Methods("PUT", "DELETE")
-	} else {
-		rtr.Path("/{type:data}/{bag}").HandlerFunc(processChange(p)).Methods("POST")
-		rtr.Path("/{type:data}/{bag}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
-		rtr.Path("/{type:environments|nodes|roles}").HandlerFunc(processChange(p)).Methods("POST")
-		rtr.Path("/{type:environments|nodes|roles}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
-		rtr.Path("/{type:cookbooks}/{name}/{version}").HandlerFunc(processCookbook(p)).Methods("PUT", "DELETE")
+	if false {
+		if cfg.Chef.EnterpriseChef {
+			rtr.Path("/organizations/{org}/{type:data}/{bag}").HandlerFunc(processChange(p)).Methods("POST")
+			rtr.Path("/organizations/{org}/{type:data}/{bag}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
+			rtr.Path("/organizations/{org}/{type:environments|nodes|roles}").HandlerFunc(processChange(p)).Methods("POST")
+			rtr.Path("/organizations/{org}/{type:environments|nodes|roles}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
+			rtr.Path("/organizations/{org}/{type:cookbooks}/{name}/{version}").HandlerFunc(processCookbook(p)).Methods("PUT", "DELETE")
+		} else {
+			rtr.Path("/{type:data}/{bag}").HandlerFunc(processChange(p)).Methods("POST")
+			rtr.Path("/{type:data}/{bag}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
+			rtr.Path("/{type:environments|nodes|roles}").HandlerFunc(processChange(p)).Methods("POST")
+			rtr.Path("/{type:environments|nodes|roles}/{name}").HandlerFunc(processChange(p)).Methods("PUT", "DELETE")
+			rtr.Path("/{type:cookbooks}/{name}/{version}").HandlerFunc(processCookbook(p)).Methods("PUT", "DELETE")
+		}
 	}
+
+	rtr.Path("/{type:nodes|environments|roles|cookbooks}").HandlerFunc(cacheRequest(p)).Methods("GET")
+	rtr.Path("/{type:nodes|environments|roles|cookbooks}").HandlerFunc(invalidateCache(p)).Methods("POST")
+	rtr.Path("/{type:nodes|environments|roles|cookbooks}/{name}").HandlerFunc(cacheRequest(p)).Methods("GET")
+	rtr.Path("/{type:nodes|environments|roles|cookbooks}/{name}").HandlerFunc(invalidateCache(p)).Methods("PUT")
+
+	rtr.Path("/{type:data}/{bag}").HandlerFunc(invalidateCache(p)).Methods("POST")
+	rtr.Path("/{type:data}/{bag}").HandlerFunc(cacheRequest(p)).Methods("GET")
+	rtr.Path("/{type:data}/{bag}/{name}").HandlerFunc(cacheRequest(p)).Methods("GET")
+	rtr.Path("/{type:data}/{bag}/{name}").HandlerFunc(invalidateCache(p)).Methods("DELETE", "PUT")
+
+	rtr.Path("/{type:cookbooks}/{name}/{version}").HandlerFunc(cacheRequest(p)).Methods("GET")
+	rtr.Path("/{type:cookbooks}/{name}/{version}").HandlerFunc(invalidateCache(p)).Methods("PUT", "DELETE")
+
 	rtr.NotFoundHandler = p
 	http.Handle("/", rtr)
 
 	// Start the server
 	startSignalHandler()
-	err = http.ListenAndServe(fmt.Sprintf("%s:%d", cfg.Default.Listen, cfg.Chef.ErchefPort), nil)
+	err = http.ListenAndServe(fmt.Sprintf("%s:%d", cfg.Default.Listen, 8001), nil)
 	if err != nil {
 		e := fmt.Errorf("Failed to start Chef-Guard server on port %d: %s", cfg.Chef.ErchefPort, err)
 		ERROR.Println(e)
